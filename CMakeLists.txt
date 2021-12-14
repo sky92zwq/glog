@@ -663,8 +663,8 @@ if (gflags_FOUND)
   endif (TARGET gflags::gflags)
 
   target_compile_definitions (glog PRIVATE
-    GFLAGS_DLL_DECLARE_FLAG=GOOGLE_GLOG_DLL_DECL
-    GFLAGS_DLL_DEFINE_FLAG=GOOGLE_GLOG_DLL_DECL
+    GFLAGS_DLL_DECLARE_FLAG=GLOG_EXPORT
+    GFLAGS_DLL_DEFINE_FLAG=GLOG_EXPORT
   )
 endif (gflags_FOUND)
 
@@ -711,7 +711,7 @@ target_compile_definitions (glogbase PUBLIC
   PRIVATE GOOGLE_GLOG_IS_A_DLL)
 
 generate_export_header (glog
-  EXPORT_MACRO_NAME GOOGLE_GLOG_DLL_DECL
+  EXPORT_MACRO_NAME GLOG_EXPORT
   EXPORT_FILE_NAME ${CMAKE_CURRENT_BINARY_DIR}/glog/export.h)
 
 # Unit testing
