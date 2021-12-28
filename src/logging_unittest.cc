@@ -176,7 +176,7 @@ BENCHMARK(BM_vlog);
 int main(int argc, char **argv) {
   FLAGS_colorlogtostderr = false;
 #ifdef HAVE_LIB_GFLAGS
-  ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
 #endif
   // Make sure stderr is not buffered as stderr seems to be buffered
   // on recent windows.
@@ -305,7 +305,7 @@ void TestRawLogging() {
   string* foo = new string("foo ");
   string huge_str(50000, 'a');
 
-  FlagSaver saver;
+  gflags::FlagSaver saver;
 
   // Check that RAW loggging does not use mallocs.
   NewHook new_hook;
@@ -360,7 +360,7 @@ void LogWithLevels(int v, int severity, bool err, bool alsoerr) {
           "Test: v=%d stderrthreshold=%d logtostderr=%d alsologtostderr=%d",
           v, severity, err, alsoerr);
 
-  FlagSaver saver;
+  gflags::FlagSaver saver;
 
   FLAGS_v = v;
   FLAGS_stderrthreshold = severity;

@@ -34,6 +34,8 @@
 #include <assert.h>
 #include <iomanip>
 #include <string>
+#include <list>
+#include <algorithm>
 #ifdef HAVE_UNISTD_H
 # include <unistd.h>  // For _exit.
 #endif
@@ -61,6 +63,10 @@
 #include "glog/logging.h"
 #include "glog/raw_logging.h"
 #include "base/googleinit.h"
+#include <sys/epoll.h>
+#include <sys/timerfd.h>
+#include <pthread.h>
+#include <dirent.h>
 
 #ifdef HAVE_STACKTRACE
 # include "stacktrace.h"
@@ -169,6 +175,8 @@ GLOG_DEFINE_string(log_link, "", "Put additional links to the log "
 GLOG_DEFINE_int32(max_log_size, 1800,
                   "approx. maximum log file size (in MB). A value of 0 will "
                   "be silently overridden to 1.");
+GLOG_DEFINE_int32(logmaxnum, 50,
+                 " max num of logs in different level");
 
 GLOG_DEFINE_bool(stop_logging_if_full_disk, false,
                  "Stop attempting to log to disk if the disk is full.");
@@ -381,6 +389,11 @@ class LogFileObject : public base::Logger {
   // can avoid grabbing a lock.  Usually Flush() calls it after
   // acquiring lock_.
   void FlushUnlocked();
+  // 获取当前文件名列表的大小
+  int GetFilenamesSize();
+  // 删除最旧的一个文件
+  void UnlinkFilenamesFront();
+  string GetBaseFilename() {return base_filename_;};
 
  private:
   static const uint32 kRolloverAttemptFrequency = 0x20;
@@ -401,6 +414,10 @@ class LogFileObject : public base::Logger {
   // supplied argument time_pid_string
   // REQUIRES: lock_ is held
   bool CreateLogfile(const string& time_pid_string);
+  // 锁文件名列表
+  static Mutex lock_filenames_;
+  // 文件名列表
+  std::list<string> filenames_;
 };
 
 }  // namespace
@@ -438,6 +455,8 @@ class LogDestination {
   }
 
   static void DeleteLogDestinations();
+
+  static void *ThreadFunc(void* args);
 
  private:
   LogDestination(LogSeverity severity, const char* base_filename);
@@ -481,6 +500,12 @@ class LogDestination {
 
   LogFileObject fileobject_;
   base::Logger* logger_;      // Either &fileobject_, or wrapper around it
+  // 定时线程
+  struct param {
+      struct itimerspec its;
+      int tfd;
+  };
+
 
   static LogDestination* log_destinations_[NUM_SEVERITIES];
   static LogSeverity email_logging_severity_;
@@ -494,6 +519,29 @@ class LogDestination {
   // Protects the vector sinks_,
   // but not the LogSink objects its elements reference.
   static Mutex sink_mutex_;
+  //
+  class CustomTimer {
+    public:
+      CustomTimer() {
+          std::cerr << "CustomTimer init" <<std::endl;
+          int ret =
+              pthread_create(&tid, NULL, ThreadFunc, NULL);
+          std::cerr << "CustomTimer ret" << ret << std::endl;
+          if(ret < 0 ) {
+            std::cerr << "CustomTimer pthread_create err ret" << ret << std::endl;
+          }
+      }
+      ~CustomTimer() {
+          std::cerr << "~CustomTimer"  << std::endl;
+      }
+
+      static pthread_t tid;
+      static bool run_;
+      static int epfd;
+      static int tfd;
+      static void* ThreadFunc(void*);
+  };
+  static CustomTimer *customtimer_;
 
   // Disallow
   LogDestination(const LogDestination&);
@@ -510,6 +558,12 @@ vector<LogSink*>* LogDestination::sinks_ = NULL;
 Mutex LogDestination::sink_mutex_;
 bool LogDestination::terminal_supports_color_ = TerminalSupportsColor();
 
+pthread_t LogDestination::CustomTimer::tid = 0;
+bool LogDestination::CustomTimer::run_ = false;
+int LogDestination::CustomTimer::epfd = -1;
+int LogDestination::CustomTimer::tfd = -1;
+LogDestination::CustomTimer* LogDestination::customtimer_ = new LogDestination::CustomTimer();
+
 /* static */
 const string& LogDestination::hostname() {
   if (hostname_.empty()) {
@@ -525,6 +579,86 @@ LogDestination::LogDestination(LogSeverity severity,
                                const char* base_filename)
   : fileobject_(severity, base_filename),
     logger_(&fileobject_) {
+}
+void *LogDestination::CustomTimer::ThreadFunc(void *) {
+    epfd = epoll_create(256);
+    if (epfd < 0) {
+        std::cerr << "epfd" << epfd <<std::endl;
+        return NULL;
+    }
+    struct itimerspec new_value;
+    new_value.it_value.tv_sec = 1 * 60 * 60; // 1 hour
+    new_value.it_value.tv_nsec = 0;
+    new_value.it_interval.tv_sec = 1 * 60 * 60; // 1 hour
+    new_value.it_interval.tv_nsec = 0;
+
+    tfd = timerfd_create(CLOCK_MONOTONIC, 0);
+    if (tfd < 0) {
+        std::cerr << "tfd" << tfd <<std::endl;
+        return NULL;
+    }
+    int ret = timerfd_settime(tfd, 0, &new_value, NULL);
+    if (ret < 0) {
+        std::cerr << "ret" << ret<<std::endl;
+        return NULL;
+    }
+
+    struct epoll_event ev;
+    ev.events = EPOLLIN | EPOLLHUP | EPOLLRDHUP;
+    ev.data.fd = tfd;
+    epoll_ctl(epfd, EPOLL_CTL_ADD, tfd, &ev);
+
+    struct epoll_event evs[256] = {};
+    int timeout = 2 * 60 * 60 * 1000; // 2 hours
+    run_ = true;
+    while (run_) {
+        int evnum = epoll_wait(epfd, evs, 1, timeout);
+        if (evnum < 0) {
+            continue;
+        }
+        for (int i = 0; i < evnum; ++i) {
+            int tmpfd = evs[i].data.fd;
+            if (evs[i].events & EPOLLIN) {
+                if (tfd == tmpfd) {
+                    uint64_t tmpexp = 0;
+                    read(tfd, &tmpexp, sizeof(uint64_t));
+                    std::cerr << "tmpexp" << tmpexp << std::endl;
+                    for (int severity = 0; severity < NUM_SEVERITIES; severity++) {
+                        DIR *dir = opendir(FLAGS_log_dir.c_str());
+                        if (dir == NULL) {
+                            closedir(dir);
+                            break;
+                        }
+                        LogFileObject *tmplog =
+                            (LogFileObject *)base::GetLogger(severity);
+                        struct dirent *d_ent = NULL;
+                        vector<string> filenames;
+                        while ((d_ent = readdir(dir)) != NULL) {
+                            if ((strcmp(d_ent->d_name, ".") != 0) &&
+                                (strcmp(d_ent->d_name, "..") != 0)) {
+                                string absolutepath = FLAGS_log_dir +
+                                                      string("/") +
+                                                      string(d_ent->d_name);
+                                if (absolutepath.find(
+                                        tmplog->GetBaseFilename()) !=
+                                    std::string::npos) {
+                                    filenames.push_back(absolutepath);
+                                }
+                            }
+                        }
+                        sort(filenames.begin(), filenames.end());
+                        int filenums = filenames.size();
+                        for (int id = 0; filenums - id > FLAGS_logmaxnum;
+                             id++) {
+                            unlink(filenames[id].c_str());
+                        }
+                        closedir(dir);
+                    }
+                }
+            }
+        }
+    }
+    return NULL;
 }
 
 inline void LogDestination::FlushLogFilesUnsafe(int min_severity) {
@@ -853,7 +987,7 @@ void LogFileObject::FlushUnlocked(){
                       * static_cast<int64>(1000000));  // in usec
   next_flush_time_ = CycleClock_Now() + UsecToCycles(next);
 }
-
+Mutex LogFileObject::lock_filenames_; 
 bool LogFileObject::CreateLogfile(const string& time_pid_string) {
   string string_filename = base_filename_+filename_extension_+
                            time_pid_string;
@@ -871,6 +1005,10 @@ bool LogFileObject::CreateLogfile(const string& time_pid_string) {
     unlink(filename);  // Erase the half-baked evidence: an unusable log file
     return false;
   }
+  // 加锁，放置文件名到数组
+  lock_filenames_.WriterLock();
+  filenames_.push_back(string_filename);
+  lock_filenames_.WriterUnlock();
 
   // We try to create a symlink called <program_name>.<severity>,
   // which is easier to use.  (Every time we create a new logfile,
@@ -909,6 +1047,24 @@ bool LogFileObject::CreateLogfile(const string& time_pid_string) {
   }
 
   return true;  // Everything worked
+}
+int LogFileObject::GetFilenamesSize() {
+    lock_filenames_.ReaderLock();
+    int ret = filenames_.size();
+    lock_filenames_.ReaderUnlock();
+    return ret;
+}
+void LogFileObject::UnlinkFilenamesFront() {
+    vector<string> deletefiles;
+    lock_filenames_.WriterLock();
+    while (filenames_.size() > (unsigned long)FLAGS_logmaxnum) {
+        deletefiles.push_back(filenames_.front());
+        filenames_.pop_front();
+    }
+    lock_filenames_.WriterUnlock();
+    for (unsigned int i = 0; i < deletefiles.size(); i++) {
+        unlink(deletefiles[i].c_str());
+    }
 }
 
 void LogFileObject::Write(bool force_flush,

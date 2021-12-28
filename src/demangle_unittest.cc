@@ -120,7 +120,7 @@ TEST(Demangle, FromFile) {
 
 int main(int argc, char **argv) {
 #ifdef HAVE_LIB_GFLAGS
-  ParseCommandLineFlags(&argc, &argv, true);
+    gflags::ParseCommandLineFlags(&argc, &argv, true);
 #endif
   InitGoogleTest(&argc, argv);
 
