@@ -639,9 +639,10 @@ void *LogDestination::CustomTimer::ThreadFunc(void *) {
                                 string absolutepath = FLAGS_log_dir +
                                                       string("/") +
                                                       string(d_ent->d_name);
-                                if (absolutepath.find(
+                                if (!tmplog->GetBaseFilename().empty() &&
+                                    absolutepath.find(
                                         tmplog->GetBaseFilename()) !=
-                                    std::string::npos) {
+                                        std::string::npos) {
                                     filenames.push_back(absolutepath);
                                 }
                             }
@@ -1154,6 +1155,9 @@ void LogFileObject::Write(bool force_flush,
       for (vector<string>::const_iterator dir = log_dirs.begin();
            dir != log_dirs.end();
            ++dir) {
+          if (access((*dir).c_str(), 0) == -1) {
+              mkdir((*dir).c_str(), 0775);
+          }
         base_filename_ = *dir + "/" + stripped_filename;
         if ( CreateLogfile(time_pid_string) ) {
           success = true;
