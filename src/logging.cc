@@ -177,6 +177,8 @@ GLOG_DEFINE_int32(max_log_size, 1800,
                   "be silently overridden to 1.");
 GLOG_DEFINE_int32(logmaxnum, 50,
                  " max num of logs in different level");
+GLOG_DEFINE_int32(custimer, 1 * 60 *60,
+                 " timer of log rolling.");
 
 GLOG_DEFINE_bool(stop_logging_if_full_disk, false,
                  "Stop attempting to log to disk if the disk is full.");
@@ -587,9 +589,9 @@ void *LogDestination::CustomTimer::ThreadFunc(void *) {
         return NULL;
     }
     struct itimerspec new_value;
-    new_value.it_value.tv_sec = 1 * 60 * 60; // 1 hour
+    new_value.it_value.tv_sec = FLAGS_custimer; // 1 hour
     new_value.it_value.tv_nsec = 0;
-    new_value.it_interval.tv_sec = 1 * 60 * 60; // 1 hour
+    new_value.it_interval.tv_sec = FLAGS_custimer; // 1 hour
     new_value.it_interval.tv_nsec = 0;
 
     tfd = timerfd_create(CLOCK_MONOTONIC, 0);
