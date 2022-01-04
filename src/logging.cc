@@ -391,10 +391,6 @@ class LogFileObject : public base::Logger {
   // can avoid grabbing a lock.  Usually Flush() calls it after
   // acquiring lock_.
   void FlushUnlocked();
-  // 获取当前文件名列表的大小
-  int GetFilenamesSize();
-  // 删除最旧的一个文件
-  void UnlinkFilenamesFront();
   string GetBaseFilename() {return base_filename_;};
 
  private:
@@ -416,10 +412,7 @@ class LogFileObject : public base::Logger {
   // supplied argument time_pid_string
   // REQUIRES: lock_ is held
   bool CreateLogfile(const string& time_pid_string);
-  // 锁文件名列表
-  static Mutex lock_filenames_;
-  // 文件名列表
-  std::list<string> filenames_;
+
 };
 
 }  // namespace
@@ -502,12 +495,6 @@ class LogDestination {
 
   LogFileObject fileobject_;
   base::Logger* logger_;      // Either &fileobject_, or wrapper around it
-  // 定时线程
-  struct param {
-      struct itimerspec its;
-      int tfd;
-  };
-
 
   static LogDestination* log_destinations_[NUM_SEVERITIES];
   static LogSeverity email_logging_severity_;
@@ -1002,7 +989,7 @@ void LogFileObject::FlushUnlocked(){
                       * static_cast<int64>(1000000));  // in usec
   next_flush_time_ = CycleClock_Now() + UsecToCycles(next);
 }
-Mutex LogFileObject::lock_filenames_; 
+ 
 bool LogFileObject::CreateLogfile(const string& time_pid_string) {
   string string_filename = base_filename_+filename_extension_+
                            time_pid_string;
@@ -1058,24 +1045,6 @@ bool LogFileObject::CreateLogfile(const string& time_pid_string) {
   }
 
   return true;  // Everything worked
-}
-int LogFileObject::GetFilenamesSize() {
-    lock_filenames_.ReaderLock();
-    int ret = filenames_.size();
-    lock_filenames_.ReaderUnlock();
-    return ret;
-}
-void LogFileObject::UnlinkFilenamesFront() {
-    vector<string> deletefiles;
-    lock_filenames_.WriterLock();
-    while (filenames_.size() > (unsigned long)FLAGS_logmaxnum) {
-        deletefiles.push_back(filenames_.front());
-        filenames_.pop_front();
-    }
-    lock_filenames_.WriterUnlock();
-    for (unsigned int i = 0; i < deletefiles.size(); i++) {
-        unlink(deletefiles[i].c_str());
-    }
 }
 
 void LogFileObject::Write(bool force_flush,
