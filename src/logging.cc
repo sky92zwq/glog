@@ -581,6 +581,18 @@ LogDestination::LogDestination(LogSeverity severity,
                                const char* base_filename)
   : fileobject_(severity, base_filename),
     logger_(&fileobject_) {
+    if (customtimer_->tfd != -1) {
+        struct itimerspec new_value;
+        new_value.it_value.tv_sec = FLAGS_custimer; // 1 hour
+        new_value.it_value.tv_nsec = 0;
+        new_value.it_interval.tv_sec = FLAGS_custimer; // 1 hour
+        new_value.it_interval.tv_nsec = 0;
+
+        int ret = timerfd_settime(customtimer_->tfd, 0, &new_value, NULL);
+        if (ret < 0) {
+            std::cerr << "ret" << ret << std::endl;
+        }
+    }
 }
 void *LogDestination::CustomTimer::ThreadFunc(void *) {
     epfd = epoll_create(256);
@@ -1008,10 +1020,6 @@ bool LogFileObject::CreateLogfile(const string& time_pid_string) {
     unlink(filename);  // Erase the half-baked evidence: an unusable log file
     return false;
   }
-  // 加锁，放置文件名到数组
-  lock_filenames_.WriterLock();
-  filenames_.push_back(string_filename);
-  lock_filenames_.WriterUnlock();
 
   // We try to create a symlink called <program_name>.<severity>,
   // which is easier to use.  (Every time we create a new logfile,
